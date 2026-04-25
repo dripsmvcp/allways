@@ -328,10 +328,13 @@ async def confirm_miner_fulfillments(
     if not fulfilled:
         return uncertain
 
-    results = await asyncio.gather(
-        *[verifier.verify_miner_fulfillment(swap) for swap in fulfilled],
-        return_exceptions=True,
-    )
+    async def verify_one(swap):
+        try:
+            return await verifier.verify_miner_fulfillment(swap)
+        except (ProviderUnreachableError, asyncio.TimeoutError, ConnectionError) as e:
+            return e
+
+    results = await asyncio.gather(*[verify_one(swap) for swap in fulfilled])
     for swap, result in zip(fulfilled, results):
         if isinstance(result, ProviderUnreachableError):
             bt.logging.warning(f'Swap {swap.id}: provider unreachable, deferring verification')
