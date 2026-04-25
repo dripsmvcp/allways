@@ -991,6 +991,12 @@ mod allways_swap_manager {
             self.consensus_vote(miner, REQ_DEACTIVATE, Hash::default(), move |this| {
                 this.miner_active.insert(miner, &false);
                 this.miner_deactivation_block.insert(miner, &this.env().block_number());
+                // Cancel any in-flight miner-keyed rounds so a stale post-deactivation
+                // vote can't reach quorum and run a closure (e.g. do_initiate) under
+                // assumed-active state.
+                for t in [REQ_ACTIVATE, REQ_RESERVE, REQ_INITIATE, REQ_EXTEND, REQ_EXTEND_TIMEOUT] {
+                    this.clear_request(miner, t);
+                }
                 this.env().emit_event(MinerActivated { miner, active: false });
                 Ok(())
             })
