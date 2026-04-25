@@ -320,7 +320,7 @@ async def handle_swap_reserve(
             if synapse.from_chain not in (commitment.from_chain, commitment.to_chain):
                 reject_synapse(synapse, 'Miner does not support this swap direction', ctx)
                 return synapse
-            reserve_rate, _ = commitment.get_rate_for_direction(synapse.from_chain)
+            reserve_rate, reserve_rate_str = commitment.get_rate_for_direction(synapse.from_chain)
             if reserve_rate <= 0:
                 reject_synapse(synapse, 'Miner does not support this swap direction', ctx)
                 return synapse
@@ -380,6 +380,13 @@ async def handle_swap_reserve(
                 from_amount=synapse.from_amount,
                 to_amount=synapse.to_amount,
             )
+            # Pin the rate seen at reserve time so the confirm path uses it
+            # instead of re-reading the miner's current commitment. Without
+            # this pin a miner can post a worse rate between reserve and
+            # confirm and the validator votes the new rate into the swap.
+            if not hasattr(validator, 'reserved_rate_strs'):
+                validator.reserved_rate_strs = {}
+            validator.reserved_rate_strs[(miner, synapse.from_address, synapse.from_chain)] = reserve_rate_str
             synapse.accepted = True
             bt.logging.info(f'Voted to reserve miner {miner}')
 
@@ -468,6 +475,20 @@ async def handle_swap_confirm(
                 _,
                 selected_rate_str,
             ) = direction
+
+            # Front-run defense: prefer the rate string we pinned at reserve
+            # time. Falling back to the live commitment would let a miner
+            # rewrite the rate between reserve and confirm.
+            pinned = getattr(validator, 'reserved_rate_strs', {}).get(
+                (miner, synapse.from_address, swap_from_chain)
+            )
+            if pinned is not None:
+                if pinned != selected_rate_str:
+                    bt.logging.warning(
+                        f'{ctx}: miner changed commitment rate between reserve '
+                        f'({pinned}) and confirm ({selected_rate_str}); using reserve-time rate'
+                    )
+                selected_rate_str = pinned
 
             provider = validator.axon_chain_providers.get(swap_from_chain)
             if provider is None:
